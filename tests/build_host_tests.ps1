@@ -8,6 +8,7 @@
 #   test_wq_session   nav / judge / wrong-reset + full 154-level playthrough (incl touch API)
 #   test_wq_wrap      CJK wrap hard guarantee
 #   test_wq_brief_layout  BRIEF 题面 2 倍字号的版式预算（行数 / 缓冲 / 滚动上限）
+#   test_wq_choice_layout 选择题作答页版式预算（题干行数 / 棋盘格距 / 不裁切棋子）
 #   test_wq_ai        retained AI asset (not wired to UI): capture / ko / move pick
 #
 # Does NOT compile wq_store.c (ESP-IDF NVS) or device stubs; these tests only
@@ -37,6 +38,7 @@ $cases = @(
     @{ name = "test_wq_session";   src = "test_wq_session.c";  deps = @("wq_session.c", "wq_engine.c", "wq_content.c"); depDir = $MainWq; extraDeps = @(); extraDepDir = $MainWq },
     @{ name = "test_wq_wrap";      src = "test_wq_wrap.c";      deps = @("wq_wrap.c", "wq_content.c");  depDir = $MainWq; extraDeps = @(); extraDepDir = $MainWq },
     @{ name = "test_wq_brief_layout"; src = "test_wq_brief_layout.c"; deps = @("wq_wrap.c", "wq_content.c"); depDir = $MainWq; extraDeps = @(); extraDepDir = $MainWq },
+    @{ name = "test_wq_choice_layout"; src = "test_wq_choice_layout.c"; deps = @("wq_wrap.c", "wq_content.c"); depDir = $MainWq; extraDeps = @(); extraDepDir = $MainWq },
     @{ name = "test_wq_ai";        src = "test_wq_ai.c";        deps = @("wq_ai.c");                     depDir = $TestsDir; extraDeps = @("wq_engine.c", "wq_content.c"); extraDepDir = $MainWq }
 )
 

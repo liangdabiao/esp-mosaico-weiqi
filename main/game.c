@@ -22,6 +22,11 @@
 #include "wq/wq_wrap.h"
 #include "wq_cjk_font.h"
 
+/* 触摸热区矩形。 */
+typedef struct {
+    int x, y, w, h;
+} wq_btn_t;
+
 struct game_t {
     game_config_t config;
     game_snapshot_t state;
@@ -49,6 +54,22 @@ struct game_t {
     int brief_scroll_anchor;              /* 本次手势按下时的 scroll */
     bool brief_dragging;                  /* 本次手势是否落在题面区（可滚动） */
     wq_stage_t last_stage;                /* 用于检测阶段切换（进 BRIEF 时复位滚动） */
+
+    /* SOLVE 页版式（棋盘几何 + 题干行数 + 选项矩形）。
+     * 选择题要在同一屏里放下「题干 + 棋盘 + 选项」，棋盘按剩余空间缩小；
+     * 其余题型沿用满屏棋盘。这些几何同时被手势命中使用，所以必须在 update
+     * 路径上算好并缓存在实例里 —— 写在渲染里会让第一次触摸读到初值。 */
+    char solve_q_wrapped[WQ_WRAP_CAPACITY]; /* 题干折行结果 */
+    int solve_board_x, solve_board_y;       /* 棋盘左上角（第 0 条线的交点） */
+    int solve_board_cell;                   /* 相邻两条线的间距 */
+    int solve_stone_r;                      /* 棋子半径（随格距缩放） */
+    int solve_q_lines;                      /* 题干行数（0 = 无题干） */
+    wq_btn_t solve_opt[WQ_OPTIONS_MAX];     /* 选项 / 终局确认按钮的矩形 */
+    uint8_t solve_opt_count;
+    bool solve_opt_vertical;                /* 选项是竖排（文本横排放不下时） */
+    const char *solve_action_label;         /* 终局态的确认按钮文案（否则 NULL） */
+    uint16_t solve_layout_level;            /* 缓存键：上面这版式对应哪一关 */
+    bool solve_layout_valid;
 };
 
 /* ---- 颜色 ---- */
@@ -66,21 +87,29 @@ static const Color PANEL_BG   = { 245, 222, 179, 255 };
 static const uint8_t star_cols[5] = { 2, 2, 6, 6, 4 };
 static const uint8_t star_rows[5] = { 2, 6, 2, 6, 4 };
 
-static inline int grid_x(int col) { return WQ_BOARD_ORIGIN + col * WQ_CELL; }
-static inline int grid_y(int row) { return WQ_BOARD_ORIGIN + row * WQ_CELL; }
-
-/* 选项区：底部 y 从 3/4 屏开始，按选项数均分竖条。 */
-static inline int option_area_y(void) { return GAME_HEIGHT * 3 / 4; }
-
-/* 触摸热区按钮。 */
-typedef struct {
-    int x, y, w, h;
-} wq_btn_t;
+/* 棋盘几何不再是常量：选择题要缩盘给题干与选项让位，所以原点与格距由
+ * solve_layout() 算进实例（update 与 render 共用），这里不再提供 grid_x/grid_y。
+ * 满屏版式的基准值仍来自 game_config.h 的 WQ_BOARD_ORIGIN / WQ_CELL。 */
 
 static inline bool btn_hit(const wq_btn_t *b, int x, int y)
 {
     return x >= b->x && x < b->x + b->w && y >= b->y && y < b->y + b->h;
 }
+
+/* ---- SOLVE 页（作答）版式常量 ----
+ * 正文 16px、字距 pitch = 18px：448 / 18 = 24.8 -> 一行 24 个全角位。 */
+#define WQ_SOLVE_Q_TOP       48   /* 题干区顶（跳过 44px 顶栏） */
+#define WQ_SOLVE_Q_CHARS     24   /* 题干每行字数（按码点，硬保证） */
+#define WQ_SOLVE_Q_LINE_H    20   /* 题干行距 */
+#define WQ_SOLVE_Q_MAX_LINES  6   /* 题库实测最长 5 行（107 字），留 1 行余量 */
+#define WQ_SOLVE_GAP          8   /* 区与区之间 */
+#define WQ_SOLVE_OPT_H       56   /* 横排选项按钮高 */
+#define WQ_SOLVE_OPT_ROW_H   36   /* 竖排选项每行高（3 行 + 间距仍给棋盘留得下） */
+#define WQ_SOLVE_OPT_GAP      8   /* 选项之间 */
+#define WQ_SOLVE_SIDE        16   /* 选项区左右留白 */
+#define WQ_SOLVE_LABEL_W     26   /* 选项左侧字母栏宽度 */
+#define WQ_SOLVE_BOTTOM      12   /* 选项区距底边 */
+#define WQ_SOLVE_CELL_MIN    26   /* 棋盘格距下限（实测最紧一关为 30，留余量） */
 
 /* WORLD 页右上角的音量档位按钮（全局设置，仅占一行）。 */
 static inline wq_btn_t volume_btn(void)
@@ -159,6 +188,48 @@ static int draw_line_mixed_scaled(const char *line, int x, int y, Color color,
         pen += MeasureText(ascii, ascii_px);
     }
     return pen;
+}
+
+/* 量一段混排文本的绘制宽度，步进与 draw_line_mixed_scaled 严格一致：
+ * ASCII 走 MeasureText，CJK 走字模 pitch（不在字库的码点不占位）。
+ * 版式要"先量后画"——混排的宽度不能靠猜，否则居中必然偏、放不放得下也判不准。 */
+static int line_width_mixed(const char *line, int scale)
+{
+    if (!line) return 0;
+    if (scale < 1) scale = 1;
+    const int ascii_px = WQ_TEXT_PX * scale;
+    const char *s = line;
+    int w = 0;
+    char ascii[24];
+    int an = 0;
+    while (*s) {
+        uint32_t cp = 0;
+        const int step = utf8_next_cp(s, &cp);
+        if (cp < 0x80) {
+            ascii[an++] = (char)cp;
+            if (an == (int)sizeof(ascii) - 1) {
+                ascii[an] = '\0';
+                w += MeasureText(ascii, ascii_px);
+                an = 0;
+            }
+            s += step;
+            continue;
+        }
+        if (an > 0) {
+            ascii[an] = '\0';
+            w += MeasureText(ascii, ascii_px);
+            an = 0;
+        }
+        char one[4] = { 0 };
+        memcpy(one, s, (size_t)step);
+        w += wq_cjk_width_scaled(one, scale);
+        s += step;
+    }
+    if (an > 0) {
+        ascii[an] = '\0';
+        w += MeasureText(ascii, ascii_px);
+    }
+    return w;
 }
 
 /* 全局关卡号 -> 章节下标。关卡表按章节连续存放。 */
@@ -454,6 +525,114 @@ static void brief_relayout(game_handle_t game)
     if (game->brief_scroll < 0) game->brief_scroll = 0;
 }
 
+/* 重算 SOLVE 版式：棋盘几何 + 题干行数 + 选项矩形。按需调用（同一关只算一次）。
+ *
+ * 与 brief_relayout 同理，这些几何是**手势命中**要用的，所以必须在 update 路径上
+ * 就算好并缓存在实例里 —— 留给渲染去写，第一次触摸会读到初值。
+ *
+ * 为什么要缩棋盘：选择题要在同一屏里放下「题干 + 棋盘 + 选项」。题面页虽然已经让
+ * 玩家读过题干，但选项本身是「3 / 4 / 5」这种不带语义的碎片，脱离题干就没法选，
+ * 所以作答页必须把题干和选项一起显示出来。三样都要，棋盘只能让位。 */
+static void solve_layout(game_handle_t game)
+{
+    const wq_level_t *level = wq_session_level(&game->session);
+    const uint16_t idx = level ? (uint16_t)(level - wq_levels) : 0xFFFFu;
+    if (game->solve_layout_valid && game->solve_layout_level == idx) return;
+
+    game->solve_layout_level = idx;
+    game->solve_layout_valid = true;
+    game->solve_q_lines = 0;
+    game->solve_opt_count = 0;
+    game->solve_opt_vertical = false;
+    game->solve_action_label = NULL;
+    /* 换关后清掉上一关留下的触摸高亮，免得标在新棋盘上。 */
+    game->state.tap_col = -1;
+    game->state.tap_row = -1;
+
+    /* 默认满屏棋盘：落子解谜与「移除死子」这类纯棋盘交互沿用历史版式。 */
+    int cell = WQ_CELL;
+    int origin_x = WQ_BOARD_ORIGIN;
+    int origin_y = WQ_BOARD_ORIGIN;
+    int band_h = 0;  /* 底部作答区（选项 / 终局确认按钮）高度 */
+    int band_y = 0;
+
+    if (level && level->kind == WQ_KIND_CHOICE && level->option_count > 0) {
+        /* 题干：中文没有空格，必须自己折行（硬保证每行 <= WQ_SOLVE_Q_CHARS 字）。 */
+        wq_wrap_utf8(level->question, WQ_SOLVE_Q_CHARS,
+                     game->solve_q_wrapped, sizeof(game->solve_q_wrapped));
+        int q_lines = 0;
+        for (const char *p = game->solve_q_wrapped; *p; q_lines++) {
+            while (*p && *p != '\n') p++;
+            if (*p == '\n') p++;
+        }
+        if (q_lines > WQ_SOLVE_Q_MAX_LINES) q_lines = WQ_SOLVE_Q_MAX_LINES;
+        game->solve_q_lines = q_lines;
+
+        int count = level->option_count;
+        if (count > WQ_OPTIONS_MAX) count = WQ_OPTIONS_MAX;
+        game->solve_opt_count = (uint8_t)count;
+
+        /* 先按横排算按钮宽；只要有一项文本放不下，整关改竖排。
+         * 判据必须量出来（line_width_mixed），不能靠字数猜：同一串里
+         * ASCII 与全角字符宽度差一倍。 */
+        const int bar_w = (GAME_WIDTH - 2 * WQ_SOLVE_SIDE - (count - 1) * WQ_SOLVE_OPT_GAP) / count;
+        const int inner = bar_w - WQ_SOLVE_LABEL_W - 8;
+        bool horizontal = true;
+        for (int i = 0; i < count; i++) {
+            const char *text = level->options[i] ? level->options[i] : "";
+            if (line_width_mixed(text, 1) > inner) horizontal = false;
+        }
+        game->solve_opt_vertical = !horizontal;
+        band_h = horizontal ? WQ_SOLVE_OPT_H
+                            : count * WQ_SOLVE_OPT_ROW_H + (count - 1) * WQ_SOLVE_OPT_GAP;
+        band_y = GAME_HEIGHT - WQ_SOLVE_BOTTOM - band_h;
+        for (int i = 0; i < count; i++) {
+            if (horizontal) {
+                game->solve_opt[i] = (wq_btn_t){ WQ_SOLVE_SIDE + i * (bar_w + WQ_SOLVE_OPT_GAP),
+                                                 band_y, bar_w, WQ_SOLVE_OPT_H };
+            } else {
+                game->solve_opt[i] = (wq_btn_t){ WQ_SOLVE_SIDE,
+                                                 band_y + i * (WQ_SOLVE_OPT_ROW_H + WQ_SOLVE_OPT_GAP),
+                                                 GAME_WIDTH - 2 * WQ_SOLVE_SIDE,
+                                                 WQ_SOLVE_OPT_ROW_H };
+            }
+        }
+    } else if (level && (level->kind == WQ_KIND_END_PASS || level->kind == WQ_KIND_END_FINISH)) {
+        /* 终局两态的题面写着「请点击『停一手』/『完成』」，所以底部得有个真的按钮，
+         * 否则玩家会照着一个不存在的按钮去点。 */
+        game->solve_action_label = (level->kind == WQ_KIND_END_PASS) ? "停一手" : "完成";
+        game->solve_opt_count = 1;
+        band_h = WQ_SOLVE_OPT_H;
+        band_y = GAME_HEIGHT - WQ_SOLVE_BOTTOM - band_h;
+        game->solve_opt[0] = (wq_btn_t){ (GAME_WIDTH - 200) / 2, band_y, 200, WQ_SOLVE_OPT_H };
+    }
+
+    /* 有底部作答区时，棋盘缩进上方剩余空间：取整数格距，再居中。
+     * 注意要按「格距」之外再留出**一个棋子半径**（半径 = cell*20/48）：棋盘最后
+     * 一条线上的棋子有一半长在棋盘外，只按 8 格算会让最外圈棋子被选项条切掉。
+     * 于是约束是 8*cell + 2*半径 <= avail，即 cell <= avail * 48 / 424。
+     * 实测最紧的一关（3 个长选项竖排 + 2 行题干）仍能拿到 27px 格距。 */
+    if (band_h > 0) {
+        const int q_h = game->solve_q_lines * WQ_SOLVE_Q_LINE_H;
+        const int board_top = WQ_SOLVE_Q_TOP + (q_h > 0 ? q_h + WQ_SOLVE_GAP : 0);
+        int avail = band_y - WQ_SOLVE_GAP - board_top;
+        const int avail_max = (WQ_BOARD_LINES - 1) * WQ_CELL;
+        if (avail > avail_max) avail = avail_max;
+        cell = (avail * WQ_CELL) / ((WQ_BOARD_LINES - 1) * WQ_CELL + 2 * WQ_STONE_RADIUS);
+        if (cell > WQ_CELL) cell = WQ_CELL;
+        if (cell < WQ_SOLVE_CELL_MIN) cell = WQ_SOLVE_CELL_MIN;
+        const int span = (WQ_BOARD_LINES - 1) * cell;
+        origin_x = (GAME_WIDTH - span) / 2;
+        origin_y = board_top + (avail - span) / 2;
+        if (origin_y < board_top) origin_y = board_top;
+    }
+    game->solve_board_cell = cell;
+    game->solve_board_x = origin_x;
+    game->solve_board_y = origin_y;
+    game->solve_stone_r = cell * WQ_STONE_RADIUS / WQ_CELL;
+    if (game->solve_stone_r < 8) game->solve_stone_r = 8;
+}
+
 void game_set_pointer(game_handle_t game, int32_t x, int32_t y, bool pressed)
 {
     if (!game) return;
@@ -532,9 +711,28 @@ void game_set_pointer(game_handle_t game, int32_t x, int32_t y, bool pressed)
                 after_action(game);
                 return;
             }
-            /* Snap to intersection. */
-            int col = (int)((px - WQ_BOARD_ORIGIN + WQ_CELL / 2) / WQ_CELL);
-            int row = (int)((py - WQ_BOARD_ORIGIN + WQ_CELL / 2) / WQ_CELL);
+            /* 作答页版式（棋盘原点/格距 + 选项矩形）在这里取：
+             * update 已经算过并缓存，这里再调一次是兜底（同一关不会重算）。 */
+            solve_layout(game);
+            const wq_level_t *level = wq_session_level(&game->session);
+            if (!level) break;
+
+            /* 选择题：命中选项按钮即作答；按在别处不动作（不再误当棋盘点）。 */
+            if (level->kind == WQ_KIND_CHOICE) {
+                for (uint8_t i = 0; i < game->solve_opt_count; i++) {
+                    if (btn_hit(&game->solve_opt[i], px, py)) {
+                        game->last_action = wq_session_touch_choice(&game->session, i);
+                        after_action(game);
+                        return;
+                    }
+                }
+                return;
+            }
+
+            /* 落到最近交叉点（几何取自实例版式，选择题缩过盘也照样准）。 */
+            const int bc = game->solve_board_cell;
+            int col = (int)((px - game->solve_board_x + bc / 2) / bc);
+            int row = (int)((py - game->solve_board_y + bc / 2) / bc);
             if (col < 0) col = 0;
             if (col >= WQ_BOARD_LINES) col = WQ_BOARD_LINES - 1;
             if (row < 0) row = 0;
@@ -542,17 +740,8 @@ void game_set_pointer(game_handle_t game, int32_t x, int32_t y, bool pressed)
             game->state.tap_col = (int8_t)col;
             game->state.tap_row = (int8_t)row;
             const uint8_t point = (uint8_t)(row * WQ_BOARD + col);
-            const wq_level_t *level = wq_session_level(&game->session);
-            if (!level) break;
-            if (level->kind == WQ_KIND_CHOICE) {
-                if (py >= option_area_y()) {
-                    const int n = (level->option_count > 0) ? level->option_count : 1;
-                    int opt = px * n / GAME_WIDTH;
-                    if (opt < 0) opt = 0;
-                    if (opt >= n) opt = n - 1;
-                    game->last_action = wq_session_touch_choice(&game->session, (uint8_t)opt);
-                }
-            } else if (level->kind == WQ_KIND_END_PASS || level->kind == WQ_KIND_END_FINISH) {
+            if (level->kind == WQ_KIND_END_PASS || level->kind == WQ_KIND_END_FINISH) {
+                /* 底部按钮是提示出来的那一处，但点棋盘其它地方也接受（老手感不变）。 */
                 game->last_action = wq_session_touch_confirm(&game->session);
             } else {
                 game->last_action = wq_session_touch(&game->session, point);
@@ -582,9 +771,10 @@ void game_set_pointer(game_handle_t game, int32_t x, int32_t y, bool pressed)
 void game_update(game_handle_t game)
 {
     if (!game || game->state.paused) return;
-    /* 题面版式在这里算：手势处理（game_set_pointer）跑在渲染之前，
-     * 若把 scroll_max 留给渲染去写，第一次拖动会读到 0。 */
+    /* 版式都在这里算：手势处理（game_set_pointer）跑在渲染之前，
+     * 若把 scroll_max / 棋盘几何留给渲染去写，第一次触摸会读到初值。 */
     if (game->session.stage == WQ_STAGE_BRIEF) brief_relayout(game);
+    if (game->session.stage == WQ_STAGE_SOLVE) solve_layout(game);
     ++game->state.tick;
 }
 
@@ -603,11 +793,6 @@ static void draw_stone_r(int cx, int cy, uint8_t color, float radius)
     }
 }
 
-static void draw_stone(int cx, int cy, uint8_t color)
-{
-    draw_stone_r(cx, cy, color, WQ_STONE_RADIUS);
-}
-
 /* 某格当前是否应按动画半径绘制。满期后返回 false，走正常绘制。 */
 static bool stone_anim_radius(const game_handle_t game, int col, int row,
                               float *radius)
@@ -617,7 +802,8 @@ static bool stone_anim_radius(const game_handle_t game, int col, int row,
     const int dt = game->state.tick - game->anim_start_tick;
     if (dt < 0 || dt >= WQ_ANIM_TICKS) return false;
     const float t = (float)dt / (float)WQ_ANIM_TICKS; /* 0..1 */
-    *radius = WQ_STONE_RADIUS * (0.55f + 0.45f * t);
+    /* 半径基准取当前版式的棋子半径：选择题棋盘会缩小，动画要跟着缩。 */
+    *radius = (float)game->solve_stone_r * (0.55f + 0.45f * t);
     return true;
 }
 
@@ -794,10 +980,50 @@ static void render_result(game_handle_t game)
     draw_btn_cjk(&back, "回列表", DARKGRAY);
 }
 
+/* 选择题的选项按钮：左侧字母栏 + 右侧选项正文（正文居中，按实测宽度）。
+ * 选项正文必须画出来 —— 题库里 30/32 关的选项就是「3 / 4 / 5」这种裸数字，
+ * 只画 A/B/C 等于把答案藏了。 */
+static void draw_choice_btn(const wq_btn_t *b, char label, const char *text, bool active)
+{
+    DrawRectangle(b->x, b->y, b->w, b->h, active ? BAR_ACTIVE : DARKGRAY);
+    DrawRectangleLines(b->x, b->y, b->w, b->h, TEXT_DARK);
+
+    char lab[2] = { label, '\0' };
+    DrawText(lab, b->x + (WQ_SOLVE_LABEL_W - MeasureText(lab, WQ_TEXT_PX)) / 2,
+             b->y + (b->h - WQ_TEXT_PX) / 2, WQ_TEXT_PX, TEXT_LIGHT);
+    DrawLine(b->x + WQ_SOLVE_LABEL_W, b->y + 6,
+             b->x + WQ_SOLVE_LABEL_W, b->y + b->h - 6, TEXT_DARK);
+
+    const int tw = line_width_mixed(text, 1);
+    int tx = b->x + WQ_SOLVE_LABEL_W + (b->w - WQ_SOLVE_LABEL_W - tw) / 2;
+    const int tx_min = b->x + WQ_SOLVE_LABEL_W + 3;
+    if (tx < tx_min) tx = tx_min;
+    draw_line_mixed_scaled(text, tx, b->y + (b->h - WQ_TEXT_PX) / 2, TEXT_LIGHT, 1);
+}
+
+/* 终局态的确认按钮（「停一手」/「完成」）：题面写着请点击它，就得真的有。 */
+static void draw_solve_action_btn(const wq_btn_t *b, const char *label, bool active)
+{
+    DrawRectangle(b->x, b->y, b->w, b->h, active ? BAR_ACTIVE : BUTTON_BG);
+    DrawRectangleLines(b->x, b->y, b->w, b->h, TEXT_DARK);
+    const int tw = line_width_mixed(label, 1);
+    draw_line_mixed_scaled(label, b->x + (b->w - tw) / 2,
+                           b->y + (b->h - WQ_TEXT_PX) / 2, TEXT_LIGHT, 1);
+}
+
 /* ---- SOLVE：作答 ---- */
 static void render_solve(game_handle_t game)
 {
     ClearBackground(BOARD_BG);
+    const wq_level_t *level = wq_session_level(&game->session);
+    /* 版式（棋盘几何 + 题干行数 + 选项矩形）由 solve_layout 算好，渲染只读；
+     * 选择题的棋盘会比满屏小，所以几何一律取实例字段，不用常量。 */
+    solve_layout(game);
+    const int bx = game->solve_board_x;
+    const int by = game->solve_board_y;
+    const int bc = game->solve_board_cell;
+    const int br = game->solve_stone_r;
+    const int span = (WQ_BOARD_LINES - 1) * bc;
 
     /* 左上 BACK 热区。 */
     DrawRectangle(0, 0, 70, 44, DARKGRAY);
@@ -805,29 +1031,31 @@ static void render_solve(game_handle_t game)
 
     /* 网格 + 星位。 */
     for (int i = 0; i < WQ_BOARD_LINES; i++) {
-        DrawLine(grid_x(0), grid_y(i), grid_x(WQ_BOARD_LINES - 1), grid_y(i), GRID_LINE);
-        DrawLine(grid_x(i), grid_y(0), grid_x(i), grid_y(WQ_BOARD_LINES - 1), GRID_LINE);
+        DrawLine(bx, by + i * bc, bx + span, by + i * bc, GRID_LINE);
+        DrawLine(bx + i * bc, by, bx + i * bc, by + span, GRID_LINE);
     }
     for (int s = 0; s < 5; s++) {
-        DrawCircle(grid_x(star_cols[s]), grid_y(star_rows[s]), 4, STAR_POINT);
+        DrawCircle(bx + star_cols[s] * bc, by + star_rows[s] * bc,
+                   (bc >= 40) ? 4 : 3, STAR_POINT);
     }
 
     /* 真实盘面。 */
-    const wq_level_t *level = wq_session_level(&game->session);
     for (int r = 0; r < WQ_BOARD_LINES; r++) {
         for (int c = 0; c < WQ_BOARD_LINES; c++) {
             const uint8_t color = game->session.board.cells[r * WQ_BOARD + c];
             if (color == WQ_COLOR_EMPTY) continue;
-            float ar = WQ_STONE_RADIUS;
+            const int cx = bx + c * bc;
+            const int cy = by + r * bc;
+            float ar = (float)br;
             if (stone_anim_radius(game, c, r, &ar)) {
-                draw_stone_r(grid_x(c), grid_y(r), color, ar);
+                draw_stone_r(cx, cy, color, ar);
             } else {
-                draw_stone(grid_x(c), grid_y(r), color);
+                draw_stone_r(cx, cy, color, (float)br);
             }
         }
     }
 
-    /* 标记字形（A/B/C... ASCII）。
+    /* 标记字形（A/B/C... ASCII）。居中于交叉点：写死的偏移在棋盘缩放后必偏。
      * 按实际长度拷贝而非固定 2 字节：若内容里混入多字节 UTF-8，
      * 固定 char g[2] 会腰斩字符并越界读。 */
     if (level) {
@@ -842,30 +1070,56 @@ static void render_solve(game_handle_t game)
                     glen++;
                 }
                 g[glen] = '\0';
-                DrawText(g, grid_x(p % WQ_BOARD) - 5, grid_y(p / WQ_BOARD) - 8, 16, TEXT_LIGHT);
+                DrawText(g, bx + (p % WQ_BOARD) * bc - MeasureText(g, 16) / 2,
+                         by + (p / WQ_BOARD) * bc - 8, 16, TEXT_LIGHT);
             }
         }
     }
 
-    /* 选择题选项条。 */
-    if (level && level->kind == WQ_KIND_CHOICE && level->option_count > 0) {
-        const int y = option_area_y();
-        const int n = level->option_count;
-        const int bar_h = GAME_HEIGHT - y;
-        for (int o = 0; o < n; o++) {
-            const int x0 = o * GAME_WIDTH / n;
-            const int x1 = (o + 1) * GAME_WIDTH / n;
-            const Color bar = (o == (int)game->session.option) ? BAR_ACTIVE : DARKGRAY;
-            DrawRectangle(x0 + 4, y + 8, x1 - x0 - 8, bar_h - 16, bar);
-            char label[2] = { (char)('A' + o), '\0' };
-            DrawText(label, x0 + (x1 - x0) / 2 - 6, y + bar_h / 2 - 14, 28, TEXT_LIGHT);
-        }
+    /* 触摸高亮（选择题不做落子，不画）。 */
+    if (game->state.tap_col >= 0 && game->state.tap_row >= 0 &&
+        level && level->kind != WQ_KIND_CHOICE) {
+        DrawCircleLines(bx + game->state.tap_col * bc, by + game->state.tap_row * bc,
+                        br + 4, HIGHLIGHT);
     }
 
-    /* 触摸高亮。 */
-    if (game->state.tap_col >= 0 && game->state.tap_row >= 0) {
-        DrawCircleLines(grid_x(game->state.tap_col), grid_y(game->state.tap_row),
-                        WQ_STONE_RADIUS + 4, HIGHLIGHT);
+    /* 选择题题干：选项是「3 / 4 / 5」这种脱离题干就没有意义的碎片，
+     * 所以作答页把题干一起显示（题面页读过一遍也会忘）。 */
+    if (level && level->kind == WQ_KIND_CHOICE && game->solve_q_lines > 0) {
+        int qy = WQ_SOLVE_Q_TOP;
+        const char *line = game->solve_q_wrapped;
+        for (int i = 0; i < game->solve_q_lines && *line; i++) {
+            const char *nl = line;
+            while (*nl && *nl != '\n') nl++;
+            char one_line[WQ_SOLVE_Q_CHARS * 3 + 1];
+            const size_t n = (size_t)(nl - line);
+            if (n < sizeof(one_line)) {
+                memcpy(one_line, line, n);
+                one_line[n] = '\0';
+                draw_line_mixed_scaled(one_line, 16, qy, TEXT_DARK, 1);
+            }
+            qy += WQ_SOLVE_Q_LINE_H;
+            line = nl;
+            if (*line == '\n') line++;
+        }
+        DrawLine(16, qy + 2, GAME_WIDTH - 16, qy + 2, GRID_LINE);
+    }
+
+    /* 底部作答区：选项按钮 / 终局确认按钮。 */
+    for (uint8_t i = 0; i < game->solve_opt_count; i++) {
+        const wq_btn_t *b = &game->solve_opt[i];
+        if (game->solve_action_label) {
+            const bool down = game->state.pointer_down &&
+                              btn_hit(b, (int)game->state.pointer_x, (int)game->state.pointer_y);
+            draw_solve_action_btn(b, game->solve_action_label, down);
+        } else {
+            const char *text = (level && i < level->option_count) ? level->options[i] : "";
+            /* 高亮跟随**按下**，不跟随 session.option：那是键盘光标，触摸输入下
+             * 恒为 0，会让人误以为"A 已经选中了"。 */
+            const bool down = game->state.pointer_down &&
+                              btn_hit(b, (int)game->state.pointer_x, (int)game->state.pointer_y);
+            draw_choice_btn(b, (char)('A' + i), text ? text : "", down);
+        }
     }
 
     /* 顶部信息。 */
