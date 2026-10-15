@@ -1,0 +1,57 @@
+﻿=== test_wq_engine ===
+ok  单子无气被提
+ok  棋块同提
+ok  自杀被拒（棋盘不变）
+ok  提子优先于自杀判定（先提后活合法）
+ok  占位被拒
+ok  简单劫：单提单成劫，回提被禁
+ok  劫点随下一手解除
+ok  全题库正解路径重放：134 条 / 280 手逐手合法
+test_wq_engine: PASS
+PASS: test_wq_engine
+=== test_wq_content ===
+ok  章节分段连续且恰好覆盖全部关卡
+ok  全部 154 关字段齐备（puzzle 119 / choice 32 / 终局 3）
+ok  七章标题按青铜..王者排列
+test_wq_content: PASS
+PASS: test_wq_content
+=== test_wq_progress ===
+ok  2bit 星级打包读写
+ok  星级只升不降，越界安全
+ok  无锁定：星级只是记录，关卡之间没有门槛
+ok  通关数与总星数汇总
+ok  序列化往返逐位一致
+ok  坏档整体拒绝且不写半截状态
+test_wq_progress: PASS
+PASS: test_wq_progress
+=== test_wq_session ===
+ok  导航链路 WORLD->LEVELS->BRIEF->SOLVE->BACK 全通
+ok  走错复位记错，星级降档
+ok  选择题答错记错、可再答
+ok  占位/非法落子不记错
+ok  触摸直接落子（puzzle 全路径）
+ok  触摸选择题/终局确认
+ok  触摸非法点不动作不记错
+ok  全题库通关：puzzle 119 / choice 32 / 终局 3
+test_wq_session: PASS
+PASS: test_wq_session
+=== test_wq_wrap ===
+ok  基础折行：按字数断行
+ok  单行字数是硬保证
+ok  容量不足返回 0 且清空输出
+ok  全题库折行断言：最长题面 9 行（领地）
+test_wq_wrap: PASS
+PASS: test_wq_wrap
+=== test_wq_ai ===
+ok  占位被拒
+ok  自杀被拒
+ok  单子被提（模拟写盘正确）
+ok  提子优先且选最大提子
+ok  打吃时优先救己方块
+ok  无仗可打时贴己扩展
+ok  空盘首手落中心（9×9→(4,4)，7×7→(3,3)）
+ok  BOSS 关数据契约（7×7 提 10 / 9×9 提 20，空盘）
+test_wq_ai: PASS
+PASS: test_wq_ai
+
+ALL HOST TESTS GREEN

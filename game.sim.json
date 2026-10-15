@@ -1,0 +1,16 @@
+{
+  "schema": "mosaico-game-sim/v1",
+  "sources": [
+    "main/game_module.c",
+    "main/game.c",
+    "main/wq_store_host.c",
+    "main/wq_sfx_host.c",
+    "main/wq/wq_engine.c",
+    "main/wq/wq_content.c",
+    "main/wq/wq_session.c",
+    "main/wq/wq_progress.c",
+    "main/wq/wq_wrap.c",
+    "main/wq/wq_volume.c",
+    "main/wq_cjk_font.c"
+  ]
+}

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 596" width="880" height="596" role="img" font-family="system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+<title>weiqi_quest 应用结构</title>
+<desc>同一份 C 逻辑层同时供设备固件与电脑模拟器使用，设备侧再由 NVS 存档、ES8311 音效与中文位图字模接入。</desc>
+
+<rect x="0" y="0" width="880" height="596" rx="14" fill="#FBFAF7" stroke="#E3DFD6"/>
+
+<rect x="90" y="34" width="300" height="56" rx="10" fill="#E6F1FB" stroke="#185FA5"/>
+<text x="240" y="56" text-anchor="middle" fill="#0C447C" font-size="14" font-weight="600">设备入口 · main.c</text>
+<text x="240" y="76" text-anchor="middle" fill="#185FA5" font-size="12">引擎回调 · GSP 画布 · BOOT 键（返回）</text>
+
+<rect x="490" y="34" width="300" height="56" rx="10" fill="#EEEDFE" stroke="#534AB7"/>
+<text x="640" y="56" text-anchor="middle" fill="#3C3489" font-size="14" font-weight="600">宿主入口 · game_module.c</text>
+<text x="640" y="76" text-anchor="middle" fill="#534AB7" font-size="12">模拟器适配 · JSON 状态导出</text>
+
+<path d="M240 90 V112 H300 V130" fill="none" stroke="#185FA5" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M640 90 V112 H580 V130" fill="none" stroke="#534AB7" stroke-width="1.5" marker-end="url(#a)"/>
+
+<rect x="170" y="132" width="540" height="66" rx="12" fill="#E1F5EE" stroke="#0F6E56"/>
+<text x="440" y="156" text-anchor="middle" fill="#085041" font-size="15" font-weight="600">game.c —— 共享游戏逻辑</text>
+<text x="440" y="180" text-anchor="middle" fill="#0F6E56" font-size="12.5">页面导航 · 触摸手势 · 全部绘制　　WORLD → LEVELS → BRIEF → SOLVE → RESULT</text>
+
+<path d="M300 198 V222 H235 V244" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M580 198 V222 H645 V244" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#a)"/>
+
+<rect x="40" y="246" width="390" height="212" rx="12" fill="#E6F1FB" stroke="#185FA5"/>
+<text x="62" y="272" fill="#0C447C" font-size="14" font-weight="600">纯逻辑层 · 宿主机可直接编译测试</text>
+<text x="62" y="302" fill="#185FA5" font-size="12.5">wq_engine　　气 / 提子 / 禁自杀 / 简单劫</text>
+<text x="62" y="328" fill="#185FA5" font-size="12.5">wq_session　 闯关状态机、判题、路径匹配</text>
+<text x="62" y="354" fill="#185FA5" font-size="12.5">wq_content　 154 关数据表（生成物，勿手改）</text>
+<text x="62" y="380" fill="#185FA5" font-size="12.5">wq_progress　2bit 星级打包与序列化</text>
+<text x="62" y="406" fill="#185FA5" font-size="12.5">wq_wrap　　 中文按字数折行（硬保证）</text>
+<text x="62" y="432" fill="#185FA5" font-size="12.5">wq_volume　 音量档位与缩放</text>
+
+<rect x="450" y="246" width="390" height="212" rx="12" fill="#FAEEDA" stroke="#854F0B"/>
+<text x="472" y="272" fill="#633806" font-size="14" font-weight="600">设备适配层 · 宿主侧为空实现</text>
+<text x="472" y="302" fill="#854F0B" font-size="12.5">wq_store　　NVS 进度与音量</text>
+<text x="472" y="328" fill="#854F0B" font-size="12.5">wq_sfx　　　音效封装（档位映射）</text>
+<text x="472" y="354" fill="#854F0B" font-size="12.5">rtttl_player 合成音色 · 独立任务播放</text>
+<text x="472" y="380" fill="#854F0B" font-size="12.5">wq_cjk_font　位图字模 blit（整数倍放大）</text>
+<text x="472" y="406" fill="#BA7517" font-size="12.5">宿主侧换成 wq_store_host / wq_sfx_host</text>
+<text x="472" y="432" fill="#BA7517" font-size="12.5">同一份逻辑层，两套薄适配</text>
+
+<path d="M235 458 V482" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+<path d="M645 458 V482" fill="none" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+
+<rect x="40" y="484" width="800" height="76" rx="12" fill="#F1EFE8" stroke="#5F5E5A"/>
+<text x="440" y="511" text-anchor="middle" fill="#444441" font-size="13.5">GSP 场景包（场景即画面）+ Raylib Lite Engine + ESP-Mosaico BSP</text>
+<text x="440" y="536" text-anchor="middle" fill="#5F5E5A" font-size="12.5">CO5300 LCD · CST9220 触摸 · ES8311 音频 · NVS 存档</text>
+
+<defs>
+<marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#5F5E5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+</svg>

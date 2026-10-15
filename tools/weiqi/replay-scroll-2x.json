@@ -1,0 +1,8 @@
+{"events": [
+  {"frame": 1, "type": "tap", "x": 200, "y": 88},
+  {"frame": 3, "type": "tap", "x": 120, "y": 430},
+  {"frame": 6, "type": "pointer", "x": 240, "y": 260, "pressed": true},
+  {"frame": 8, "type": "pointer", "x": 240, "y": 210, "pressed": true},
+  {"frame": 10, "type": "pointer", "x": 240, "y": 160, "pressed": true},
+  {"frame": 12, "type": "pointer", "x": 240, "y": 160, "pressed": false}
+]}

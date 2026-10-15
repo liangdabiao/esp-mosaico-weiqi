@@ -1,0 +1,31 @@
+# ESP-IDF build output
+/build/
+/tests/build/
+/build-host/
+/.codex-runs/
+/managed_components/
+/sdkconfig
+/sdkconfig.old
+/dependencies.lock.bak
+
+# build artifacts
+*.bin
+*.elf
+*.map
+*.irisfw
+*.o
+*.obj
+
+# tooling
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*~
